@@ -19,6 +19,7 @@ Author:  Hamdi Altaheri
 # Dataset BCI Competition IV-2a is available at 
 # http://bnci-horizon-2020.eu/database/data-sets
 
+import os
 import numpy as np
 import scipy.io as sio
 from tensorflow.keras.utils import to_categorical
@@ -27,6 +28,155 @@ from sklearn.utils import shuffle
 
 # We need the following function to load and preprocess the High Gamma Dataset
 # from preprocess_HGD import load_HGD_data
+
+def load_BCI2a_MOABB_data(data_path, subject, training):
+    """ Loading BCI Competition IV-2a data from MOABB 
+    
+        Parameters
+        ----------
+        data_path: string
+            dataset path (not used, MOABB handles downloads)
+        subject: int
+            number of subject in [1, .. ,9]
+        training: bool
+            if True, load training data
+            if False, load testing data
+    """
+    from moabb.datasets import BNCI2014_001
+    from moabb.paradigms import MotorImagery
+    import numpy as np
+    
+    # 获取数据 - 使用更宽松的参数设置
+    dataset = BNCI2014_001()
+    
+    # 设置更合适的参数来获取完整数据
+    paradigm = MotorImagery(
+        events=['left_hand', 'right_hand', 'feet', 'tongue'],
+        n_classes=4,
+        fmin=8,     # 降低最小频率
+        fmax=35,    # 提高最大频率
+        tmin=0.5,   # 试次开始时间
+        tmax=4.5,   # 试次结束时间
+        resample=250  # 重采样频率
+    )
+    
+    X, labels, meta = paradigm.get_data(dataset, [subject])
+    
+    print(f"总数据量: {len(X)}")
+    print(f"会话信息: {meta['session'].unique()}")
+    print(f"标签分布: {np.unique(labels, return_counts=True)}")
+    
+    # 分离训练和测试数据
+    if training:
+        mask = meta['session'] == '0train'
+    else:
+        mask = meta['session'] == '1test'
+    
+    X_data = X[mask]
+    y_data = labels[mask]
+    
+    print(f"{'训练' if training else '测试'}数据量: {len(X_data)}")
+    
+    # 转换标签为数字 (0-based for the model)
+    label_map = {'left_hand': 0, 'right_hand': 1, 'feet': 2, 'tongue': 3}
+    y_numeric = np.array([label_map[label] for label in y_data])
+    
+    return X_data, y_numeric
+
+def load_BCI2a_NPZ_data(data_path, subject, training):
+    """ Loading BCI Competition IV-2a data from NPZ format
+    
+        Parameters
+        ----------
+        data_path: string
+            dataset path containing NPZ files
+        subject: int
+            number of subject in [1, .. ,9]
+        training: bool
+            if True, load training data
+            if False, load testing data
+    """
+    import numpy as np
+    from scipy import signal
+    
+    # Define parameters
+    n_channels = 22
+    fs = 250  # sampling frequency
+    trial_length = int(4.5 * fs)  # 4.5 seconds
+    
+    if training:
+        # Load all training sessions for this subject
+        all_data = []
+        all_events = []
+        
+        for session in range(6):  # 6 training sessions
+            try:
+                file_path = f"{data_path}/S{subject:02d}_0train_{session}.npz"
+                npz_data = np.load(file_path, allow_pickle=True)
+                
+                raw_data = npz_data['data']  # Shape: (n_channels, n_samples)
+                events = npz_data['events']  # Events array
+                
+                all_data.append(raw_data)
+                all_events.append(events)
+                
+            except FileNotFoundError:
+                print(f"Warning: Training file {file_path} not found")
+                continue
+                
+    else:
+        # Load test sessions
+        all_data = []
+        all_events = []
+        
+        for session in range(6):  # 6 test sessions  
+            try:
+                file_path = f"{data_path}/S{subject:02d}_1test_{session}.npz"
+                npz_data = np.load(file_path, allow_pickle=True)
+                
+                raw_data = npz_data['data']  # Shape: (n_channels, n_samples)
+                events = npz_data['events']  # Events array
+                
+                all_data.append(raw_data)
+                all_events.append(events)
+                
+            except FileNotFoundError:
+                print(f"Warning: Test file {file_path} not found")
+                continue
+    
+    if not all_data:
+        raise ValueError(f"No data found for subject {subject}")
+    
+    # Combine all sessions
+    combined_data = np.concatenate(all_data, axis=1)
+    combined_events = np.concatenate(all_events, axis=0) if all_events else np.array([])
+    
+    # Extract trials based on events
+    # This is a simplified version - you may need to adjust based on your data structure
+    trials = []
+    labels = []
+    
+    # For now, create some sample trials (you'll need to adapt this based on your event structure)
+    n_samples_per_trial = trial_length
+    n_trials = min(288, combined_data.shape[1] // n_samples_per_trial)  # Max 288 trials as in original
+    
+    for i in range(n_trials):
+        start_idx = i * n_samples_per_trial
+        end_idx = start_idx + n_samples_per_trial
+        
+        if end_idx <= combined_data.shape[1]:
+            trial_data = combined_data[:n_channels, start_idx:end_idx]
+            trials.append(trial_data)
+            # Assign labels cyclically (you'll need to use actual event labels)
+            labels.append(i % 4)
+    
+    if not trials:
+        raise ValueError(f"No valid trials extracted for subject {subject}")
+    
+    data_return = np.array(trials)  # Shape: (n_trials, n_channels, n_samples)
+    class_return = np.array(labels)
+    
+    return data_return, class_return
 
 #%%
 def load_data_LOSO (data_path, subject, dataset): 
@@ -306,12 +456,16 @@ def load_CS2R_data_v2(data_path, subject, training,
 
 #%%
 def standardize_data(X_train, X_test, channels): 
-    # X_train & X_test :[Trials, MI-tasks, Channels, Time points]
+    # X_train & X_test :[Trials, 1, Channels, Time points]
     for j in range(channels):
           scaler = StandardScaler()
-          scaler.fit(X_train[:, 0, j, :])
-          X_train[:, 0, j, :] = scaler.transform(X_train[:, 0, j, :])
-          X_test[:, 0, j, :] = scaler.transform(X_test[:, 0, j, :])
+          # 对每个通道的所有时间点进行标准化
+          train_channel_data = X_train[:, 0, j, :].reshape(-1, 1)
+          scaler.fit(train_channel_data)
+          
+          # 应用标准化
+          X_train[:, 0, j, :] = scaler.transform(X_train[:, 0, j, :].reshape(-1, 1)).reshape(-1, X_train.shape[-1])
+          X_test[:, 0, j, :] = scaler.transform(X_test[:, 0, j, :].reshape(-1, 1)).reshape(-1, X_test.shape[-1])
 
     return X_train, X_test
 
@@ -332,9 +486,9 @@ def get_data(path, subject, dataset = 'BCI2a', classes_labels = 'all', LOSO = Fa
         for training, and 288 x 9 trials in session 2 for testing.  
         """
         if (dataset == 'BCI2a'):
-            path = path + 's{:}/'.format(subject+1)
-            X_train, y_train = load_BCI2a_data(path, subject+1, True)
-            X_test, y_test = load_BCI2a_data(path, subject+1, False)
+            # Use MOABB to load BCI Competition IV-2a data directly
+            X_train, y_train = load_BCI2a_MOABB_data(path, subject+1, True)
+            X_test, y_test = load_BCI2a_MOABB_data(path, subject+1, False)
         elif (dataset == 'CS2R'):
             X_train, y_train, _, _, _ = load_CS2R_data_v2(path, subject, True, classes_labels)
             X_test, y_test, _, _, _ = load_CS2R_data_v2(path, subject, False, classes_labels)

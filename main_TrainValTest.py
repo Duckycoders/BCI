@@ -144,21 +144,23 @@ def train(dataset_conf, train_conf, results_path):
             filepath = results_path + '/saved models/run-{}'.format(train+1)
             if not os.path.exists(filepath):
                 os.makedirs(filepath)        
-            filepath = filepath + '/subject-{}.h5'.format(sub+1)
+            filepath = filepath + '/subject-{}.weights.h5'.format(sub+1)
             
             # Create the model
             model = getModel(model_name, dataset_conf, from_logits)
-            # Compile and train the model
+            # Compile and train the model (simple configuration that worked before)
             model.compile(loss=CategoricalCrossentropy(from_logits=from_logits), optimizer=Adam(learning_rate=lr), metrics=['accuracy'])          
 
             # model.summary()
             # plot_model(model, to_file='plot_model.png', show_shapes=True, show_layer_names=True)
             
             callbacks = [
-                ModelCheckpoint(filepath, monitor='val_loss', verbose=0, 
-                                save_best_only=True, save_weights_only=True, mode='min'),
-                ReduceLROnPlateau(monitor="val_loss", factor=0.90, patience=20, verbose=0, min_lr=0.0001),  
-                # EarlyStopping(monitor='val_loss', verbose=1, mode='min', patience=patience)
+                ModelCheckpoint(filepath, monitor='val_accuracy', verbose=0, 
+                                save_best_only=True, save_weights_only=True, mode='max'),
+                
+                ReduceLROnPlateau(monitor="val_loss", factor=0.90, patience=20, verbose=1, min_lr=0.0001),  
+                
+                EarlyStopping(monitor='val_accuracy', verbose=1, mode='max', patience=patience)
             ]
             history = model.fit(X_train, y_train_onehot, validation_data=(X_val, y_val_onehot), 
                                 epochs=epochs, batch_size=batch_size, callbacks=callbacks, verbose=0)
@@ -192,13 +194,13 @@ def train(dataset_conf, train_conf, results_path):
         
         # Store the path of the best model among several runs
         best_run = np.argmax(acc[sub,:])
-        filepath = '/saved models/run-{}/subject-{}.h5'.format(best_run+1, sub+1)+'\n'
+        filepath = '/saved models/run-{}/subject-{}.weights.h5'.format(best_run+1, sub+1)+'\n'
         best_models.write(filepath)
 
         # Plot Learning curves 
-        if (LearnCurves == True):
-            print('Plot Learning Curves ....... ')
-            draw_learning_curves(bestTrainingHistory, sub+1)
+        # if (LearnCurves == True):
+        #     print('Plot Learning Curves ....... ')
+        #     draw_learning_curves(bestTrainingHistory, sub+1)
           
     # Get the current 'OUT' time to calculate the overall training time
     out_exp = time.time()
@@ -259,7 +261,7 @@ def test(model, dataset_conf, results_path, allRuns = True):
         # Iteration over runs (seeds) 
         for seed in range(len(runs)): 
             # Load the model of the seed.
-            model.load_weights('{}/saved models/{}/subject-{}.h5'.format(results_path, runs[seed], sub+1))
+            model.load_weights('{}/saved models/{}/subject-{}.weights.h5'.format(results_path, runs[seed], sub+1))
             
             inference_time = time.time()
             # Predict MI task
@@ -301,10 +303,10 @@ def test(model, dataset_conf, results_path, allRuns = True):
     log_write.write(info+'\n')
          
     # Draw a performance bar chart for all subjects 
-    draw_performance_barChart(n_sub, acc.mean(1), 'Accuracy')
-    draw_performance_barChart(n_sub, kappa.mean(1), 'k-score')
+    # draw_performance_barChart(n_sub, acc.mean(1), 'Accuracy')
+    # draw_performance_barChart(n_sub, kappa.mean(1), 'k-score')
     # Draw confusion matrix for all subjects (average)
-    draw_confusion_matrix(cf_matrix.mean((0,1)), 'All', results_path, classes_labels)
+    # draw_confusion_matrix(cf_matrix.mean((0,1)), 'All', results_path, classes_labels)
     # Close opened file    
     log_write.close() 
     
@@ -371,15 +373,15 @@ def getModel(model_name, dataset_conf, from_logits = False):
 #%%
 def run():
     # Define dataset parameters
-    dataset = 'HGD' # Options: 'BCI2a','HGD', 'CS2R'
+    dataset = 'BCI2a' # Options: 'BCI2a','HGD', 'CS2R'
     
     if dataset == 'BCI2a': 
-        in_samples = 1125
+        in_samples = 1001
         n_channels = 22
         n_sub = 9
         n_classes = 4
         classes_labels = ['Left hand', 'Right hand','Foot','Tongue']
-        data_path = os.path.expanduser('~') + '/BCI Competition IV/BCI Competition IV-2a/BCI Competition IV 2a mat/'
+        data_path = 'data/BCI2a_mat/'
     elif dataset == 'HGD': 
         in_samples = 1125
         n_channels = 44
@@ -409,12 +411,12 @@ def run():
     dataset_conf = { 'name': dataset, 'n_classes': n_classes, 'cl_labels': classes_labels,
                     'n_sub': n_sub, 'n_channels': n_channels, 'in_samples': in_samples,
                     'data_path': data_path, 'isStandard': True, 'LOSO': False}
-    # Set training hyperparamters
-    train_conf = { 'batch_size': 64, 'epochs': 500, 'patience': 100, 'lr': 0.001,'n_train': 1,
+    # Set training hyperparamters (restored to working configuration)
+    train_conf = { 'batch_size': 16, 'epochs': 100, 'patience': 20, 'lr': 0.0005,'n_train': 1,
                   'LearnCurves': True, 'from_logits': False, 'model':'ATCNet'}
            
     # Train the model
-    # train(dataset_conf, train_conf, results_path)
+    train(dataset_conf, train_conf, results_path)
 
     # Evaluate the model based on the weights saved in the '/results' folder
     model = getModel(train_conf.get('model'), dataset_conf)
