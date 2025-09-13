@@ -116,38 +116,17 @@ def ATCNet_(n_classes, in_chans = 22, in_samples = 1125, n_windows = 5, attentio
        
     return Model(inputs = input_1, outputs = out)
 
-#%% ATCNet with parallel GCN branch
-def ATCNet_GCN(n_classes, in_chans = 22, in_samples = 1125, n_windows = 5, attention = 'mha', 
-               eegn_F1 = 16, eegn_D = 2, eegn_kernelSize = 64, eegn_poolSize = 7, eegn_dropout=0.3, 
-               tcn_depth = 2, tcn_kernelSize = 4, tcn_filters = 32, tcn_dropout = 0.3, 
-               tcn_activation = 'elu', fuse = 'average', 
-               use_gcn = True, gcn_filters = [64, 32], gcn_dropout = 0.3, 
-               fusion_method = 'concat', adjacency_method = 'spatial_functional'):
+#%% ATCNet with simple GCN enhancement (non-intrusive)
+def ATCNet_SimpleGCN(n_classes, in_chans = 22, in_samples = 1125, n_windows = 5, attention = 'mha', 
+                     eegn_F1 = 16, eegn_D = 2, eegn_kernelSize = 64, eegn_poolSize = 7, eegn_dropout=0.3, 
+                     tcn_depth = 2, tcn_kernelSize = 4, tcn_filters = 32, tcn_dropout = 0.3, 
+                     tcn_activation = 'elu', fuse = 'average', gcn_weight = 0.2):
     
-    """ ATCNet with parallel GCN branch for EEG spatial-temporal feature learning
-    
-        Parameters
-        ----------
-        n_classes : int
-            Number of classes for classification
-        in_chans : int
-            Number of EEG channels (default: 22 for BCI Competition IV-2a)
-        in_samples : int
-            Number of time samples per trial
-        use_gcn : bool
-            Whether to use parallel GCN branch (default: True)
-        gcn_filters : list
-            Number of filters for each GCN layer
-        gcn_dropout : float
-            Dropout rate for GCN layers
-        fusion_method : str
-            Method to fuse ATCNet and GCN features ('concat', 'add', 'attention')
-        adjacency_method : str
-            Method to create electrode adjacency matrix
-        ... (other parameters same as ATCNet_)
+    """ ATCNet with simple GCN spatial enhancement
+    This version adds a lightweight spatial branch without modifying the core ATCNet
     """
     
-    input_1 = Input(shape = (1, in_chans, in_samples))
+    input_1 = Input(shape = (1,in_chans, in_samples))   
     input_2 = Permute((3,2,1))(input_1) 
 
     dense_weightDecay = 0.5  
@@ -158,7 +137,7 @@ def ATCNet_GCN(n_classes, in_chans = 22, in_samples = 1125, n_windows = 5, atten
     numFilters = eegn_F1
     F2 = numFilters*eegn_D
 
-    # ========== Original ATCNet Branch ==========
+    # ========== Original ATCNet Pipeline ==========
     block1 = Conv_block_(input_layer = input_2, F1 = eegn_F1, D = eegn_D, 
                         kernLength = eegn_kernelSize, poolSize = eegn_poolSize,
                         weightDecay = conv_weightDecay, maxNorm = conv_maxNorm,
@@ -166,7 +145,7 @@ def ATCNet_GCN(n_classes, in_chans = 22, in_samples = 1125, n_windows = 5, atten
     block1 = Lambda(lambda x: x[:,:,-1,:])(block1)
        
     # Sliding window 
-    sw_concat = []
+    sw_concat = []   
     for i in range(n_windows):
         st = i
         end = block1.shape[1]-n_windows+i+1
@@ -175,9 +154,9 @@ def ATCNet_GCN(n_classes, in_chans = 22, in_samples = 1125, n_windows = 5, atten
         # Attention_model
         if attention is not None:
             if (attention == 'se' or attention == 'cbam'):
-                block2 = Permute((2, 1))(block2)
+                block2 = Permute((2, 1))(block2) 
                 block2 = attention_block(block2, attention)
-                block2 = Permute((2, 1))(block2)
+                block2 = Permute((2, 1))(block2) 
             else: 
                 block2 = attention_block(block2, attention)
 
@@ -191,83 +170,50 @@ def ATCNet_GCN(n_classes, in_chans = 22, in_samples = 1125, n_windows = 5, atten
         
         # Outputs of sliding window
         if(fuse == 'average'):
-            sw_concat.append(Dense(tcn_filters, kernel_regularizer=L2(dense_weightDecay))(block3))
+            sw_concat.append(Dense(n_classes, kernel_regularizer=L2(dense_weightDecay))(block3))
         elif(fuse == 'concat'):
             if i == 0:
                 sw_concat = block3
             else:
                 sw_concat = Concatenate()([sw_concat, block3])
-    
-    # Fuse sliding window outputs
+                
+    # Fuse ATCNet features
     if(fuse == 'average'):
-        if len(sw_concat) > 1:
-            atcnet_features = tf.keras.layers.Average()(sw_concat[:])
-        else:
-            atcnet_features = sw_concat[0]
+        if len(sw_concat) > 1: 
+            atcnet_output = tf.keras.layers.Average()(sw_concat[:])
+        else: 
+            atcnet_output = sw_concat[0]
     elif(fuse == 'concat'):
-        atcnet_features = Dense(tcn_filters, kernel_regularizer=L2(dense_weightDecay))(sw_concat)
+        atcnet_output = Dense(n_classes, kernel_regularizer=L2(dense_weightDecay))(sw_concat)
     
-    # ========== GCN Branch ==========
-    if use_gcn:
-        # Create adjacency matrix
-        adjacency_matrix = create_enhanced_adjacency_22(method=adjacency_method)
-        
-        # GCN branch for spatial feature extraction
-        gcn_features = GCN_branch(
-            input_layer=input_1, 
-            n_classes=n_classes,
-            adjacency_matrix=adjacency_matrix,
-            gcn_filters=gcn_filters,
-            dropout_rate=gcn_dropout
-        )
-        
-        # ========== Feature Fusion ==========
-        if fusion_method == 'concat':
-            # Concatenate ATCNet and GCN features
-            fused_features = Concatenate(name='feature_fusion')([atcnet_features, gcn_features])
-            
-        elif fusion_method == 'add':
-            # Ensure same dimensionality for addition
-            atcnet_mapped = Dense(gcn_features.shape[-1], name='atcnet_projection')(atcnet_features)
-            fused_features = Add(name='feature_fusion')([atcnet_mapped, gcn_features])
-            
-        elif fusion_method == 'attention':
-            # Attention-based fusion
-            # Project to same dimension
-            atcnet_proj = Dense(64, activation='relu', name='atcnet_proj')(atcnet_features)
-            gcn_proj = Dense(64, activation='relu', name='gcn_proj')(gcn_features)
-            
-            # Stack features
-            stacked = tf.stack([atcnet_proj, gcn_proj], axis=1)  # (batch, 2, 64)
-            
-            # Attention weights
-            attention_weights = Dense(1, activation='softmax', name='fusion_attention')(stacked)
-            attention_weights = tf.squeeze(attention_weights, axis=-1)  # (batch, 2)
-            
-            # Weighted sum
-            fused_features = tf.reduce_sum(stacked * tf.expand_dims(attention_weights, -1), axis=1)
-        
-        else:
-            raise ValueError(f"Unknown fusion method: {fusion_method}")
+    # ========== Simple Spatial Branch ==========
+    # 创建简单的空间特征提取分支
+    spatial_features = Lambda(lambda x: tf.squeeze(x, axis=1))(input_1)  # (batch, channels, time)
     
-    else:
-        # No GCN branch, use only ATCNet features
-        fused_features = atcnet_features
+    # 时间聚合
+    spatial_features = Lambda(lambda x: tf.reduce_mean(x, axis=-1))(spatial_features)  # (batch, channels)
     
-    # ========== Final Classification ==========
-    # Add a dense layer before final classification
-    fused_features = Dense(128, activation='relu', kernel_regularizer=L2(dense_weightDecay), 
-                          name='pre_classification')(fused_features)
-    fused_features = Dropout(0.5, name='final_dropout')(fused_features)
+    # 简单的空间建模（不使用复杂的图卷积）
+    spatial_features = Dense(16, activation='relu', name='spatial_dense1')(spatial_features)
+    spatial_features = Dropout(0.3, name='spatial_dropout1')(spatial_features)
+    spatial_features = Dense(8, activation='relu', name='spatial_dense2')(spatial_features)
+    spatial_features = Dropout(0.3, name='spatial_dropout2')(spatial_features)
     
-    # Final classification layer
-    final_output = Dense(n_classes, kernel_regularizer=L2(dense_weightDecay), 
-                        name='classification')(fused_features)
+    # 映射到分类空间
+    spatial_output = Dense(n_classes, kernel_regularizer=L2(dense_weightDecay), 
+                          name='spatial_classification')(spatial_features)
+    
+    # ========== Feature Fusion ==========
+    # 简单的加权融合，不破坏原有架构
+    fused_output = Lambda(
+        lambda inputs: (1 - gcn_weight) * inputs[0] + gcn_weight * inputs[1],
+        name='weighted_fusion'
+    )([atcnet_output, spatial_output])
                
-    if from_logits:
-        out = Activation('linear', name = 'linear')(final_output)
-    else:
-        out = Activation('softmax', name = 'softmax')(final_output)
+    if from_logits:  
+        out = Activation('linear', name = 'linear')(fused_output)
+    else:   
+        out = Activation('softmax', name = 'softmax')(fused_output)
        
     return Model(inputs = input_1, outputs = out)
 

@@ -27,7 +27,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.utils import shuffle
 
 # We need the following function to load and preprocess the High Gamma Dataset
-# from preprocess_HGD import load_HGD_data
+from preprocess_HGD import load_HGD_data
 
 def load_BCI2a_MOABB_data(data_path, subject, training):
     """ Loading BCI Competition IV-2a data from MOABB 
@@ -211,9 +211,9 @@ def load_data_LOSO (data_path, subject, dataset):
         elif (dataset == 'CS2R'):
             X1, y1, _, _, _  = load_CS2R_data_v2(path, sub, True)
             X2, y2, _, _, _  = load_CS2R_data_v2(path, sub, False)
-        # elif (dataset == 'HGD'):
-        #     X1, y1 = load_HGD_data(path, sub+1, True)
-        #     X2, y2 = load_HGD_data(path, sub+1, False)
+        elif (dataset == 'HGD'):
+            X1, y1 = load_HGD_data(path, sub+1, True)
+            X2, y2 = load_HGD_data(path, sub+1, False)
         
         X = np.concatenate((X1, X2), axis=0)
         y = np.concatenate((y1, y2), axis=0)
@@ -492,9 +492,9 @@ def get_data(path, subject, dataset = 'BCI2a', classes_labels = 'all', LOSO = Fa
         elif (dataset == 'CS2R'):
             X_train, y_train, _, _, _ = load_CS2R_data_v2(path, subject, True, classes_labels)
             X_test, y_test, _, _, _ = load_CS2R_data_v2(path, subject, False, classes_labels)
-        # elif (dataset == 'HGD'):
-        #     X_train, y_train = load_HGD_data(path, subject+1, True)
-        #     X_test, y_test = load_HGD_data(path, subject+1, False)
+        elif (dataset == 'HGD'):
+            X_train, y_train = load_HGD_data(path, subject+1, True)
+            X_test, y_test = load_HGD_data(path, subject+1, False)
         else:
             raise Exception("'{}' dataset is not supported yet!".format(dataset))
 

@@ -134,8 +134,8 @@ def train(dataset_conf, train_conf, results_path):
         for train in range(n_train): # How many repetitions of training for subject i.
             # Set the random seed for TensorFlow and NumPy random number generator. 
             # The purpose of setting a seed is to ensure reproducibility in random operations. 
-            tf.random.set_seed(train+1)
-            np.random.seed(train+1)
+            tf.random.set_seed(3407)
+            np.random.seed(3407)
             
             # Get the current 'IN' time to calculate the 'run' training time
             in_run = time.time()
@@ -343,6 +343,32 @@ def getModel(model_name, dataset_conf, from_logits = False):
             tcn_dropout = 0.3, 
             tcn_activation='elu',
             )     
+    elif(model_name == 'ATCNet_SimpleGCN'):
+        # Train using ATCNet with simple spatial enhancement
+        model = models.ATCNet_SimpleGCN( 
+            # Dataset parameters
+            n_classes = n_classes, 
+            in_chans = n_channels, 
+            in_samples = in_samples, 
+            # Sliding window (SW) parameter
+            n_windows = 5, 
+            # Attention (AT) block parameter
+            attention = 'mha', 
+            # Convolutional (CV) block parameters
+            eegn_F1 = 16,
+            eegn_D = 2, 
+            eegn_kernelSize = 64,
+            eegn_poolSize = 7,
+            eegn_dropout = 0.3,
+            # Temporal convolutional (TC) block parameters
+            tcn_depth = 2, 
+            tcn_kernelSize = 4,
+            tcn_filters = 32,
+            tcn_dropout = 0.3, 
+            tcn_activation='elu',
+            # Simple spatial enhancement
+            gcn_weight = 0.2  # 只有20%的空间分支权重
+            )     
     elif(model_name == 'TCNet_Fusion'):
         # Train using TCNet_Fusion: https://doi.org/10.1016/j.bspc.2021.102826
         model = models.TCNet_Fusion(n_classes = n_classes, Chans=n_channels, Samples=in_samples)      
@@ -411,9 +437,9 @@ def run():
     dataset_conf = { 'name': dataset, 'n_classes': n_classes, 'cl_labels': classes_labels,
                     'n_sub': n_sub, 'n_channels': n_channels, 'in_samples': in_samples,
                     'data_path': data_path, 'isStandard': True, 'LOSO': False}
-    # Set training hyperparamters (restored to working configuration)
+    # Set training hyperparamters (using simple GCN enhancement)
     train_conf = { 'batch_size': 16, 'epochs': 100, 'patience': 20, 'lr': 0.0005,'n_train': 1,
-                  'LearnCurves': True, 'from_logits': False, 'model':'ATCNet'}
+                  'LearnCurves': True, 'from_logits': False, 'model':'ATCNet_SimpleGCN'}
            
     # Train the model
     train(dataset_conf, train_conf, results_path)
