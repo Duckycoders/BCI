@@ -29,6 +29,7 @@ from tensorflow.keras.constraints import max_norm
 from tensorflow.keras import backend as K
 
 from attention_models import attention_block
+from transformer_layers import create_transformer_encoder, PositionalEncoding, eeg_sequence_pooling, prepare_cnn_features_for_transformer
 
 #%% The proposed ATCNet model, https://doi.org/10.1109/TII.2022.3197419
 def ATCNet_(n_classes, in_chans = 22, in_samples = 1125, n_windows = 5, attention = 'mha', 
@@ -214,6 +215,135 @@ def ATCNet_SimpleGCN(n_classes, in_chans = 22, in_samples = 1125, n_windows = 5,
         out = Activation('linear', name = 'linear')(fused_output)
     else:   
         out = Activation('softmax', name = 'softmax')(fused_output)
+       
+    return Model(inputs = input_1, outputs = out)
+
+#%% ATCNet with Transformer Enhancement (Convolutional-Attention Hybrid)
+def ATCNet_Transformer(n_classes, in_chans = 22, in_samples = 1125, n_windows = 5, attention = 'mha', 
+                      eegn_F1 = 16, eegn_D = 2, eegn_kernelSize = 64, eegn_poolSize = 7, eegn_dropout=0.3, 
+                      tcn_depth = 2, tcn_kernelSize = 4, tcn_filters = 32, tcn_dropout = 0.3, 
+                      tcn_activation = 'elu', fuse = 'average',
+                      # Transformer parameters
+                      transformer_d_model = 128, transformer_heads = 4, transformer_layers = 2,
+                      transformer_dff = 256, transformer_dropout = 0.1, pooling_method = 'mean'):
+    
+    """ ATCNet enhanced with Transformer for global temporal dependency modeling
+    
+    This implements the Convolutional-Attention Hybrid Model:
+    1. CNN (ATCNet) extracts local spatio-temporal features
+    2. Transformer models global temporal dependencies
+    3. Combined features for final classification
+    
+    Parameters
+    ----------
+    ... (ATCNet parameters same as before)
+    transformer_d_model : int
+        Transformer model dimension
+    transformer_heads : int
+        Number of attention heads
+    transformer_layers : int
+        Number of transformer encoder layers
+    transformer_dff : int
+        Feed-forward network dimension
+    transformer_dropout : float
+        Transformer dropout rate
+    pooling_method : str
+        Method to pool transformer output ('mean', 'cls_token', 'attention')
+    """
+    
+    input_1 = Input(shape = (1,in_chans, in_samples))   
+    input_2 = Permute((3,2,1))(input_1) 
+
+    dense_weightDecay = 0.5  
+    conv_weightDecay = 0.009
+    conv_maxNorm = 0.6
+    from_logits = False
+
+    numFilters = eegn_F1
+    F2 = numFilters*eegn_D
+
+    # ========== Step 1: CNN Feature Extraction (保持ATCNet前端不变) ==========
+    block1 = Conv_block_(input_layer = input_2, F1 = eegn_F1, D = eegn_D, 
+                        kernLength = eegn_kernelSize, poolSize = eegn_poolSize,
+                        weightDecay = conv_weightDecay, maxNorm = conv_maxNorm,
+                        in_chans = in_chans, dropout = eegn_dropout)
+    block1 = Lambda(lambda x: x[:,:,-1,:])(block1)
+       
+    # Sliding window processing to create sequence
+    sw_features = []   # 存储每个窗口的特征（作为序列）
+    for i in range(n_windows):
+        st = i
+        end = block1.shape[1]-n_windows+i+1
+        block2 = block1[:, st:end, :]
+        
+        # Attention model (保持原有注意力机制)
+        if attention is not None:
+            if (attention == 'se' or attention == 'cbam'):
+                block2 = Permute((2, 1))(block2) 
+                block2 = attention_block(block2, attention)
+                block2 = Permute((2, 1))(block2) 
+            else: 
+                block2 = attention_block(block2, attention)
+
+        # Temporal convolutional network (TCN)
+        block3 = TCN_block_(input_layer = block2, input_dimension = F2, depth = tcn_depth,
+                            kernel_size = tcn_kernelSize, filters = tcn_filters, 
+                            weightDecay = conv_weightDecay, maxNorm = conv_maxNorm,
+                            dropout = tcn_dropout, activation = tcn_activation)
+        
+        # 获取每个窗口的特征向量（而不是立即分类）
+        window_features = Lambda(lambda x: x[:,-1,:])(block3)  # (batch, tcn_filters)
+        sw_features.append(window_features)
+    
+    # ========== Step 2: 准备Transformer输入 ==========
+    # 将滑动窗口特征组合成序列: (batch, n_windows, tcn_filters)
+    sequence_features = Lambda(lambda x: tf.stack(x, axis=1))(sw_features)
+    
+    # 投影到Transformer维度并添加位置编码
+    transformer_input = prepare_cnn_features_for_transformer(
+        sequence_features, target_d_model=transformer_d_model
+    )
+    transformer_input = PositionalEncoding(
+        max_seq_length=n_windows, 
+        d_model=transformer_d_model,
+        name='pos_encoding'
+    )(transformer_input)
+    
+    # ========== Step 3: Transformer全局建模 ==========
+    transformer_encoder = create_transformer_encoder(
+        d_model=transformer_d_model,
+        num_heads=transformer_heads,
+        num_layers=transformer_layers,
+        dff=transformer_dff,
+        dropout_rate=transformer_dropout
+    )
+    
+    transformer_output = transformer_encoder(transformer_input)
+    
+    # ========== Step 4: 序列池化 ==========
+    pooled_features = eeg_sequence_pooling(transformer_output, pooling_method=pooling_method)
+    
+    # ========== Step 5: 最终分类 ==========
+    # 添加一个中间层来融合特征
+    fused_features = Dense(
+        transformer_d_model // 2, 
+        activation='relu', 
+        kernel_regularizer=L2(dense_weightDecay),
+        name='feature_fusion'
+    )(pooled_features)
+    fused_features = Dropout(0.3, name='fusion_dropout')(fused_features)
+    
+    # 最终分类层
+    final_output = Dense(
+        n_classes, 
+        kernel_regularizer=L2(dense_weightDecay),
+        name='classification'
+    )(fused_features)
+               
+    if from_logits:  
+        out = Activation('linear', name = 'linear')(final_output)
+    else:   
+        out = Activation('softmax', name = 'softmax')(final_output)
        
     return Model(inputs = input_1, outputs = out)
 

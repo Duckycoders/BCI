@@ -211,9 +211,9 @@ def load_data_LOSO (data_path, subject, dataset):
         elif (dataset == 'CS2R'):
             X1, y1, _, _, _  = load_CS2R_data_v2(path, sub, True)
             X2, y2, _, _, _  = load_CS2R_data_v2(path, sub, False)
-        elif (dataset == 'HGD'):
-            X1, y1 = load_HGD_data(path, sub+1, True)
-            X2, y2 = load_HGD_data(path, sub+1, False)
+        # elif (dataset == 'HGD'):
+        #     X1, y1 = load_HGD_data(path, sub+1, True)
+        #     X2, y2 = load_HGD_data(path, sub+1, False)
         
         X = np.concatenate((X1, X2), axis=0)
         y = np.concatenate((y1, y2), axis=0)

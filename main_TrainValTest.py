@@ -124,8 +124,19 @@ def train(dataset_conf, train_conf, results_path):
         bestTrainingHistory = [] 
         
         # Get training and validation data
-        X_train, _, y_train_onehot, _, _, _ = get_data(
-            data_path, sub, dataset, LOSO = LOSO, isStandard = isStandard)
+        try:
+            X_train, _, y_train_onehot, _, _, _ = get_data(
+                data_path, sub, dataset, LOSO = LOSO, isStandard = isStandard)
+            
+            # 检查数据是否有效
+            if X_train is None or len(X_train) == 0:
+                print(f"受试者 {sub+1} 数据无效，跳过...")
+                continue
+                
+        except Exception as e:
+            print(f"受试者 {sub+1} 数据加载失败: {e}")
+            print("跳过此受试者，继续下一个...")
+            continue
          
         # Divide the training data into training and validation
         X_train, X_val, y_train_onehot, y_val_onehot = train_test_split(X_train, y_train_onehot, test_size=0.2, random_state=42)       
@@ -256,7 +267,18 @@ def test(model, dataset_conf, results_path, allRuns = True):
     inference_time = 0 #  inference_time: classification time for one trial
     for sub in range(n_sub): # (num_sub): for all subjects, (i-1,i): for the ith subject.
         # Load data
-        _, _, _, X_test, _, y_test_onehot = get_data(data_path, sub, dataset, LOSO = LOSO, isStandard = isStandard)     
+        try:
+            _, _, _, X_test, _, y_test_onehot = get_data(data_path, sub, dataset, LOSO = LOSO, isStandard = isStandard)
+            
+            # 检查数据是否有效
+            if X_test is None or len(X_test) == 0:
+                print(f"受试者 {sub+1} 测试数据无效，跳过...")
+                continue
+                
+        except Exception as e:
+            print(f"受试者 {sub+1} 测试数据加载失败: {e}")
+            print("跳过此受试者，继续下一个...")
+            continue     
 
         # Iteration over runs (seeds) 
         for seed in range(len(runs)): 
@@ -367,7 +389,38 @@ def getModel(model_name, dataset_conf, from_logits = False):
             tcn_dropout = 0.3, 
             tcn_activation='elu',
             # Simple spatial enhancement
-            gcn_weight = 0.2  # 只有20%的空间分支权重
+            gcn_weight = 0.2  # 只有20%的空间分支权重yixia
+            )     
+    elif(model_name == 'ATCNet_Transformer'):
+        # Train using ATCNet with Transformer enhancement (Convolutional-Attention Hybrid)
+        model = models.ATCNet_Transformer( 
+            # Dataset parameters
+            n_classes = n_classes, 
+            in_chans = n_channels, 
+            in_samples = in_samples, 
+            # Sliding window (SW) parameter
+            n_windows = 5, 
+            # Attention (AT) block parameter
+            attention = 'mha', 
+            # Convolutional (CV) block parameters
+            eegn_F1 = 16,
+            eegn_D = 2, 
+            eegn_kernelSize = 64,
+            eegn_poolSize = 7,
+            eegn_dropout = 0.3,
+            # Temporal convolutional (TC) block parameters
+            tcn_depth = 2, 
+            tcn_kernelSize = 4,
+            tcn_filters = 32,
+            tcn_dropout = 0.3, 
+            tcn_activation='elu',
+            # Transformer parameters
+            transformer_d_model = 64,      # 较小的维度，避免过拟合
+            transformer_heads = 4,         # 4个注意力头
+            transformer_layers = 2,        # 2层编码器
+            transformer_dff = 128,         # 前馈网络维度
+            transformer_dropout = 0.2,     # 适度的dropout
+            pooling_method = 'mean'        # 全局平均池化
             )     
     elif(model_name == 'TCNet_Fusion'):
         # Train using TCNet_Fusion: https://doi.org/10.1016/j.bspc.2021.102826
@@ -409,12 +462,12 @@ def run():
         classes_labels = ['Left hand', 'Right hand','Foot','Tongue']
         data_path = 'data/BCI2a_mat/'
     elif dataset == 'HGD': 
-        in_samples = 1125
-        n_channels = 44
+        in_samples = 1000  # HGD数据的实际时间点数
+        n_channels = 128   # HGD数据的实际通道数
         n_sub = 14
         n_classes = 4
         classes_labels = ['Right Hand', 'Left Hand','Rest','Feet']     
-        data_path = os.path.expanduser('~') + '/mne_data/MNE-schirrmeister2017-data/robintibor/high-gamma-dataset/raw/master/data/'
+        data_path = 'C:/Users/徐善若/mne_data/high-gamma-dataset/data/'
     elif dataset == 'CS2R': 
         in_samples = 1125
         # in_samples = 576
@@ -439,7 +492,7 @@ def run():
                     'data_path': data_path, 'isStandard': True, 'LOSO': False}
     # Set training hyperparamters (using simple GCN enhancement)
     train_conf = { 'batch_size': 16, 'epochs': 100, 'patience': 20, 'lr': 0.0005,'n_train': 1,
-                  'LearnCurves': True, 'from_logits': False, 'model':'ATCNet_SimpleGCN'}
+                  'LearnCurves': True, 'from_logits': False, 'model':'ATCNet_Transformer'}
            
     # Train the model
     train(dataset_conf, train_conf, results_path)
