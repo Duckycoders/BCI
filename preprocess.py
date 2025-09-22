@@ -493,8 +493,10 @@ def get_data(path, subject, dataset = 'BCI2a', classes_labels = 'all', LOSO = Fa
             X_train, y_train, _, _, _ = load_CS2R_data_v2(path, subject, True, classes_labels)
             X_test, y_test, _, _, _ = load_CS2R_data_v2(path, subject, False, classes_labels)
         elif (dataset == 'HGD'):
-            X_train, y_train = load_HGD_data(path, subject+1, True)
-            X_test, y_test = load_HGD_data(path, subject+1, False)
+            # 直接使用HGD加载器，绕过MOABB
+            from hgd_direct_loader import load_HGD_data_direct
+            X_train, y_train = load_HGD_data_direct(path, subject+1, True)
+            X_test, y_test = load_HGD_data_direct(path, subject+1, False)
         else:
             raise Exception("'{}' dataset is not supported yet!".format(dataset))
 

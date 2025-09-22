@@ -451,8 +451,8 @@ def getModel(model_name, dataset_conf, from_logits = False):
     
 #%%
 def run():
-    # Define dataset parameters
-    dataset = 'BCI2a' # Options: 'BCI2a','HGD', 'CS2R'
+    # Define dataset parameters  
+    dataset = 'HGD' # Options: 'BCI2a','HGD', 'CS2R' (使用直接EDF加载方法)
     
     if dataset == 'BCI2a': 
         in_samples = 1001
@@ -464,7 +464,7 @@ def run():
     elif dataset == 'HGD': 
         in_samples = 1000  # HGD数据的实际时间点数
         n_channels = 128   # HGD数据的实际通道数
-        n_sub = 14
+        n_sub = 3  # 只使用已下载的前3个受试者
         n_classes = 4
         classes_labels = ['Right Hand', 'Left Hand','Rest','Feet']     
         data_path = 'C:/Users/徐善若/mne_data/high-gamma-dataset/data/'

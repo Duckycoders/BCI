@@ -23,25 +23,14 @@ import logging
 import os
 import scipy.io as sio
 from collections import OrderedDict
+# 简化导入，避免braindecode兼容性问题
 try:
-    # 尝试新版本braindecode的导入路径
-    from braindecode.datasets import BBCIDataset
-    from braindecode.preprocessing import create_windows_from_events
-    from braindecode.preprocessing import exponential_moving_standardize
-    from braindecode.preprocessing import preprocess, Preprocessor
+    import braindecode
+    print(f"Braindecode available: {braindecode.__version__}")
     NEW_BRAINDECODE = True
 except ImportError:
-    try:
-        # 尝试旧版本braindecode的导入路径
-        from braindecode.datasets.bbci import BBCIDataset
-        from braindecode.datautil.trial_segment import create_signal_target_from_raw_mne
-        from braindecode.mne_ext.signalproc import mne_apply, resample_cnt
-        from braindecode.datautil.signalproc import exponential_running_standardize
-        from braindecode.datautil.signalproc import highpass_cnt
-        NEW_BRAINDECODE = False
-    except ImportError:
-        print("Warning: braindecode not available, using MOABB fallback")
-        NEW_BRAINDECODE = None
+    print("Warning: braindecode not available")
+    NEW_BRAINDECODE = False
 
 def load_HGD_data_from_mat(filename, subject, training):
     """直接从.mat文件加载HGD数据"""
@@ -191,28 +180,13 @@ def load_HGD_data(data_path, subject, training, low_cut_hz =0, debug = False):
             if False, 
     """
     
-    # 检查本地文件是否存在
-    if training:  
-        filename = data_path + 'train/{}.mat'.format(subject)
-    else:         
-        filename = data_path + 'test/{}.mat'.format(subject)
-    
-    if os.path.exists(filename):
-        print(f"使用本地文件加载HGD数据 - 受试者 {subject}: {filename}")
-        try:
-            return load_HGD_data_from_mat(filename, subject, training)
-        except Exception as e:
-            print(f"本地文件加载失败: {e}")
-    
-    # 如果本地文件不存在，尝试MOABB
+    # 尝试直接加载EDF文件
     try:
-        print(f"本地文件不存在，尝试MOABB下载 - 受试者 {subject}")
-        return load_HGD_data_moabb(data_path, subject, training)
+        from hgd_direct_loader import load_HGD_data_direct
+        return load_HGD_data_direct(data_path, subject, training)
     except Exception as e:
-        print(f"MOABB方法失败 (受试者 {subject}): {e}")
+        print(f"直接EDF加载失败 (受试者 {subject}): {e}")
         print("跳过此受试者，返回空数据...")
-        
-        # 返回空数据，让训练跳过这个受试者
         return None, None
 
 def load_HGD_data_braindecode(data_path, subject, training, low_cut_hz =0, debug = False):
