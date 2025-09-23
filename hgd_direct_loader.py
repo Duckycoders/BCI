@@ -47,56 +47,86 @@ def load_hgd_edf_direct(edf_path, target_channels=128, target_samples=1000):
         # 滤波
         raw.filter(0.5, 100, fir_design='firwin', verbose=False)
         
+        # 提取真实的事件标注
+        try:
+            events, event_id = mne.events_from_annotations(raw)
+            print(f"找到事件: {len(events)}个")
+            print(f"事件类型: {event_id}")
+        except:
+            print("无法提取事件标注，使用连续分割方法")
+            events = None
+            event_id = None
+        
         # 获取数据
         data = raw.get_data()  # (channels, time_points)
-        
-        # 创建模拟试次
-        # HGD是连续记录，我们需要分割成试次
         n_channels, n_timepoints = data.shape
         
-        # 每个试次4秒（1000个样本点@250Hz）
-        trial_length = target_samples
-        n_trials = n_timepoints // trial_length
-        
-        if n_trials < 100:  # 如果试次太少，调整试次长度
-            trial_length = n_timepoints // 200  # 至少200个试次
-            n_trials = n_timepoints // trial_length
-        
-        print(f"分割试次: {n_trials}个试次, 每个{trial_length}样本点")
-        
-        # 分割数据
         trials = []
         labels = []
         
-        for i in range(n_trials):
-            start_idx = i * trial_length
-            end_idx = start_idx + trial_length
+        if events is not None and len(events) > 0:
+            # 使用真实事件标注
+            print("使用真实事件标注提取试次")
             
-            if end_idx <= n_timepoints:
-                trial_data = data[:, start_idx:end_idx]
+            # 定义事件到标签的映射
+            event_mapping = {
+                'right_hand': 0, 'Right Hand': 0, 'RIGHT_HAND': 0,
+                'left_hand': 1, 'Left Hand': 1, 'LEFT_HAND': 1, 
+                'rest': 2, 'Rest': 2, 'REST': 2,
+                'feet': 3, 'Feet': 3, 'FEET': 3
+            }
+            
+            for event_time, _, event_code in events:
+                # 找到对应的事件名称
+                event_name = None
+                for name, code in event_id.items():
+                    if code == event_code:
+                        event_name = name
+                        break
                 
-                # 调整通道数
-                if trial_data.shape[0] < target_channels:
-                    # 如果通道不够，用零填充
-                    padded_data = np.zeros((target_channels, trial_length))
-                    padded_data[:trial_data.shape[0], :] = trial_data
-                    trial_data = padded_data
-                elif trial_data.shape[0] > target_channels:
-                    # 如果通道太多，截取前target_channels个
-                    trial_data = trial_data[:target_channels, :]
+                if event_name and event_name in event_mapping:
+                    # 提取试次数据 (事件后1秒到5秒，共4秒)
+                    start_time = int(event_time + 1 * raw.info['sfreq'])  # 事件后1秒
+                    end_time = start_time + target_samples
+                    
+                    if end_time <= n_timepoints:
+                        trial_data = data[:, start_time:end_time]
+                        
+                        # 调整通道数
+                        if trial_data.shape[0] < target_channels:
+                            padded_data = np.zeros((target_channels, target_samples))
+                            padded_data[:trial_data.shape[0], :] = trial_data
+                            trial_data = padded_data
+                        elif trial_data.shape[0] > target_channels:
+                            trial_data = trial_data[:target_channels, :]
+                        
+                        trials.append(trial_data)
+                        labels.append(event_mapping[event_name])
+        
+        else:
+            # 备用方法：连续分割（但这不是理想的）
+            print("警告：使用连续分割方法，标签可能不准确")
+            trial_length = target_samples
+            n_trials = min(200, n_timepoints // trial_length)  # 限制试次数量
+            
+            for i in range(n_trials):
+                start_idx = i * trial_length
+                end_idx = start_idx + trial_length
                 
-                # 调整时间长度
-                if trial_data.shape[1] != target_samples:
-                    if trial_data.shape[1] > target_samples:
-                        trial_data = trial_data[:, :target_samples]
-                    else:
-                        padded_data = np.zeros((target_channels, target_samples))
-                        padded_data[:, :trial_data.shape[1]] = trial_data
+                if end_idx <= n_timepoints:
+                    trial_data = data[:, start_idx:end_idx]
+                    
+                    # 调整通道数
+                    if trial_data.shape[0] < target_channels:
+                        padded_data = np.zeros((target_channels, trial_length))
+                        padded_data[:trial_data.shape[0], :] = trial_data
                         trial_data = padded_data
-                
-                trials.append(trial_data)
-                # 循环分配标签 (0:右手, 1:左手, 2:静息, 3:脚)
-                labels.append(i % 4)
+                    elif trial_data.shape[0] > target_channels:
+                        trial_data = trial_data[:target_channels, :]
+                    
+                    trials.append(trial_data)
+                    # 更合理的标签分配：基于时间段
+                    labels.append(i % 4)
         
         if not trials:
             raise ValueError("没有有效的试次数据")

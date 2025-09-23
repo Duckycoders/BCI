@@ -30,6 +30,7 @@ from tensorflow.keras import backend as K
 
 from attention_models import attention_block
 from transformer_layers import create_transformer_encoder, PositionalEncoding, eeg_sequence_pooling, prepare_cnn_features_for_transformer
+from functional_gcn import create_functional_gcn_branch
 
 #%% The proposed ATCNet model, https://doi.org/10.1109/TII.2022.3197419
 def ATCNet_(n_classes, in_chans = 22, in_samples = 1125, n_windows = 5, attention = 'mha', 
@@ -334,6 +335,152 @@ def ATCNet_Transformer(n_classes, in_chans = 22, in_samples = 1125, n_windows = 
     fused_features = Dropout(0.3, name='fusion_dropout')(fused_features)
     
     # 最终分类层
+    final_output = Dense(
+        n_classes, 
+        kernel_regularizer=L2(dense_weightDecay),
+        name='classification'
+    )(fused_features)
+               
+    if from_logits:  
+        out = Activation('linear', name = 'linear')(final_output)
+    else:   
+        out = Activation('softmax', name = 'softmax')(final_output)
+       
+    return Model(inputs = input_1, outputs = out)
+
+#%% ATCNet_Transformer_GCN: Triple-branch architecture
+def ATCNet_Transformer_GCN(n_classes, in_chans = 128, in_samples = 1000, n_windows = 5, attention = 'mha', 
+                           eegn_F1 = 16, eegn_D = 2, eegn_kernelSize = 64, eegn_poolSize = 7, eegn_dropout=0.3, 
+                           tcn_depth = 2, tcn_kernelSize = 4, tcn_filters = 32, tcn_dropout = 0.3, 
+                           tcn_activation = 'elu', fuse = 'average',
+                           # Transformer parameters
+                           transformer_d_model = 64, transformer_heads = 4, transformer_layers = 2,
+                           transformer_dff = 128, transformer_dropout = 0.1, pooling_method = 'mean',
+                           # GCN parameters
+                           use_gcn = True, gcn_units = [32, 16], gcn_dropout = 0.3, gcn_weight = 0.3):
+    
+    """ ATCNet enhanced with both Transformer and GCN for comprehensive EEG modeling
+    
+    This implements a triple-branch architecture:
+    1. CNN (ATCNet) branch: Local spatio-temporal features
+    2. Transformer branch: Global temporal dependencies  
+    3. GCN branch: Spatial electrode topology modeling
+    
+    Parameters
+    ----------
+    ... (previous parameters same as ATCNet_Transformer)
+    use_gcn : bool
+        Whether to include GCN branch
+    gcn_units : list
+        Units for each GCN layer
+    gcn_dropout : float
+        Dropout rate for GCN layers
+    gcn_weight : float
+        Weight for GCN branch in final fusion (0-1)
+    """
+    
+    input_1 = Input(shape = (1, in_chans, in_samples))   
+    input_2 = Permute((3,2,1))(input_1) 
+
+    dense_weightDecay = 0.5  
+    conv_weightDecay = 0.009
+    conv_maxNorm = 0.6
+    from_logits = False
+
+    numFilters = eegn_F1
+    F2 = numFilters*eegn_D
+
+    # ========== Branch 1: CNN-Transformer Pipeline ==========
+    block1 = Conv_block_(input_layer = input_2, F1 = eegn_F1, D = eegn_D, 
+                        kernLength = eegn_kernelSize, poolSize = eegn_poolSize,
+                        weightDecay = conv_weightDecay, maxNorm = conv_maxNorm,
+                        in_chans = in_chans, dropout = eegn_dropout)
+    block1 = Lambda(lambda x: x[:,:,-1,:])(block1)
+       
+    # Sliding window processing
+    sw_features = []
+    for i in range(n_windows):
+        st = i
+        end = block1.shape[1]-n_windows+i+1
+        block2 = block1[:, st:end, :]
+        
+        # Attention model
+        if attention is not None:
+            if (attention == 'se' or attention == 'cbam'):
+                block2 = Permute((2, 1))(block2) 
+                block2 = attention_block(block2, attention)
+                block2 = Permute((2, 1))(block2) 
+            else: 
+                block2 = attention_block(block2, attention)
+
+        # TCN
+        block3 = TCN_block_(input_layer = block2, input_dimension = F2, depth = tcn_depth,
+                            kernel_size = tcn_kernelSize, filters = tcn_filters, 
+                            weightDecay = conv_weightDecay, maxNorm = conv_maxNorm,
+                            dropout = tcn_dropout, activation = tcn_activation)
+        
+        window_features = Lambda(lambda x: x[:,-1,:])(block3)
+        sw_features.append(window_features)
+    
+    # Prepare for Transformer
+    sequence_features = Lambda(lambda x: tf.stack(x, axis=1))(sw_features)
+    transformer_input = prepare_cnn_features_for_transformer(
+        sequence_features, target_d_model=transformer_d_model
+    )
+    transformer_input = PositionalEncoding(
+        max_seq_length=n_windows, 
+        d_model=transformer_d_model,
+        name='pos_encoding'
+    )(transformer_input)
+    
+    # Transformer encoding
+    transformer_encoder = create_transformer_encoder(
+        d_model=transformer_d_model,
+        num_heads=transformer_heads,
+        num_layers=transformer_layers,
+        dff=transformer_dff,
+        dropout_rate=transformer_dropout
+    )
+    
+    transformer_output = transformer_encoder(transformer_input)
+    cnn_transformer_features = eeg_sequence_pooling(transformer_output, pooling_method=pooling_method)
+    
+    # ========== Branch 2: Functional GCN Pipeline ==========
+    if use_gcn and in_chans == 128:  # Only for HGD 128-channel data
+        # Functional connectivity GCN branch
+        gcn_features = create_functional_gcn_branch(
+            input_layer=input_1,
+            gcn_units=gcn_units,
+            dropout_rate=gcn_dropout
+        )
+        
+        # ========== Feature Fusion ==========
+        # Ensure compatible dimensions
+        cnn_transformer_mapped = Dense(
+            gcn_features.shape[-1], 
+            activation='relu',
+            name='cnn_transformer_projection'
+        )(cnn_transformer_features)
+        
+        # Weighted fusion
+        fused_features = Lambda(
+            lambda inputs: (1 - gcn_weight) * inputs[0] + gcn_weight * inputs[1],
+            name='weighted_fusion'
+        )([cnn_transformer_mapped, gcn_features])
+        
+    else:
+        # No GCN branch
+        fused_features = cnn_transformer_features
+    
+    # ========== Final Classification ==========
+    fused_features = Dense(
+        64, 
+        activation='relu', 
+        kernel_regularizer=L2(dense_weightDecay),
+        name='final_dense'
+    )(fused_features)
+    fused_features = Dropout(0.4, name='final_dropout')(fused_features)
+    
     final_output = Dense(
         n_classes, 
         kernel_regularizer=L2(dense_weightDecay),
